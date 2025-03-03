@@ -13,10 +13,12 @@ if (!$source_dir) {
 }
 my $portrait_dir = './portrait';
 my $landscape_dir = './landscape';
+my $square_dir = './square';
 
 # Create directories if they don't exist
 mkdir $portrait_dir unless -d $portrait_dir;
 mkdir $landscape_dir unless -d $landscape_dir;
+mkdir $square_dir unless -d $square_dir;
 
 # Open source directory
 opendir(my $dh, $source_dir) or die "Cannot open directory: $!";
@@ -30,8 +32,10 @@ foreach my $file (@files) {
     if ($width && $height) {
         if ($height > $width) {
             move($file_path, "$portrait_dir/$file") or die "Failed to move $file: $!";
-        } else {
+        } elsif ($width > $height) {
             move($file_path, "$landscape_dir/$file") or die "Failed to move $file: $!";
+        } else {
+            move($file_path, "$square_dir/$file") or die "Failed to move $file: $!";
         }
     } else {
         warn "Could not determine size of $file_path\n";
