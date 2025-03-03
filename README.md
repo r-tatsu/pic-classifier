@@ -23,3 +23,5 @@ To run the script, use the following command:
 ```sh
 ./main.pl [source_dir]
 ```
+---
+find . -type f -name '* 2.*' -exec rm {} +
