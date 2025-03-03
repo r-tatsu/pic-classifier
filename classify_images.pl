@@ -22,7 +22,7 @@ mkdir $square_dir unless -d $square_dir;
 
 # Open source directory
 opendir(my $dh, $source_dir) or die "Cannot open directory: $!";
-my @files = grep { /\.(png|jpg)$/i && -f "$source_dir/$_" } readdir($dh);
+my @files = grep { /\.(png|jpg|jpeg)$/i && -f "$source_dir/$_" } readdir($dh);
 closedir($dh);
 
 foreach my $file (@files) {
