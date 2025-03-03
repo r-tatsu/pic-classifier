@@ -10,7 +10,6 @@ File::Basename
 File::Copy
 Image::Size
 
-The following Perl modules are required:
 ```sh
 sudo cpanm File::Basename File::Copy Image::Size
 ```
