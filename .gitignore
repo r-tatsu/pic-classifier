@@ -12,6 +12,12 @@ wallpaper_P
 *_dedup.db-journal
 *_report.md
 *_delete_log.md
+*_apply_log.md
+
+#分類結果格納ディレクトリ
+review_*/
+nsfw_review_*/
+uncertain_review_*/
 
 # Python
 __pycache__/
