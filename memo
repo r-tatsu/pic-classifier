@@ -1,16 +1,19 @@
-cd ~/pic-classifier
 conda activate photodedup
+
+# 1. 画像分類
 ./classify_images.pl source
 
-# 1. 重複検出（pic-classifier 全体を対象、レポートのみ生成）
-python photo_dedup_v3.py ./pic-classifier
-
-# 2. レポト確認後、削除・移動を dry-run で確認
-python photo_dedup_apply.py pic-classifier --dry-run
-
-# 3. 本番実行（確定重複を削除、候補を review へ移動）
+---
+# 1. 重複検出
+python photo_dedup_v3.py pic-classifier
+# 2.ハッシュが完全一致した画像を削除 + 類似度の高い画像をまとめて移動
 python photo_dedup_apply.py pic-classifier --yes
-
-# 4. review 内で目視確認後、source へリストア
-python photo_dedup_apply.py pic-classifier --restore --review-dir ./review_YYYY-MM-DD --dry-run
+# 3.目視確認した画像をsourceへ戻す
 python photo_dedup_apply.py pic-classifier --restore --review-dir ./review_YYYY-MM-DD --yes
+
+---
+# NSFW判定（nsfwpy）
+# 1. スキャン
+python photo_nsfw_scan.py pic-classifier
+# 2. NSFWを nsfw_review_YYMMDD へ、UNCERTAINを uncertain_review_YYMMDD へ移動）
+python photo_nsfw_apply.py pic-classifier --yes
