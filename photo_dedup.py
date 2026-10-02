@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 photo_dedup.py - 画像重複検出スクリプト（AVIF/HEIC対応・差分更新版）
-MacBook Air M3 16GB向けに最適化
 
 設計方針:
   - 確定重複: ファイルハッシュ(SHA256)完全一致のみ。これだけが自動削除OK。
