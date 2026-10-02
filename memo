@@ -1,0 +1,6 @@
+cd ~/pic-classifier
+conda activate photodedup
+./classify_images.pl source
+python photo_dedup.py ./source --workers 4
+python photo_dedup_apply.py source --auto --dry-run
+python photo_dedup_apply.py source --auto --yes

@@ -1,25 +1,31 @@
-Script for Classifying Images into Portrait, Landscape, and Square Formats
+## Photo Deduplication Tools (Python)
 
-This script classifies image files in a specified directory into portrait, landscape, and square formats, then moves them to their respective directories.
+`photo_dedup.py` detects duplicate images using a 3-stage pipeline:
 
-Requirements
+1. SHA-256 exact match
+2. Perceptual hash (pHash) for near-duplicates
+3. ORB feature matching for crop/rotation variants
 
-Perl 5.x
-The following Perl modules:
-File::Basename
-File::Copy
-Image::Size
+### Requirements
 
 ```sh
-sudo cpanm File::Basename File::Copy Image::Size
+pip install pillow pillow-avif-plugin opencv-python-headless imagehash
 ```
 
-You need to grant execution permissions:
+### Usage
+
 ```sh
-chmod +x /Users/december6701/pic-classifier/classify_images.pl
+# Scan directory and generate report
+python photo_dedup.py ./source --workers 4
+
+# Apply deletion (confirmed duplicates only, auto mode)
+python photo_dedup_apply.py source --auto --yes
 ```
 
-To run the script, use the following command:
-```sh
-./main.pl [source_dir]
-```
+### Safety Features
+
+- Differential update: existing DB is reused, only new files are scanned
+- 3-tier report separates confirmed duplicates from uncertain matches
+- `photo_dedup_apply.py` only auto-deletes ORB 100% matches by default
+- Dry-run mode available: `--dry-run`
+

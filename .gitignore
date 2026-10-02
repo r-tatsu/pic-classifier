@@ -2,3 +2,17 @@ source
 portrait
 landscape
 square
+wallpaper_P
+
+# macOS
+.DS_Store
+
+# 自動生成ファイル（DB・レポート・ログ）
+*_dedup.db
+*_dedup.db-journal
+*_report.md
+*_delete_log.md
+
+# Python
+__pycache__/
+*.pyc
