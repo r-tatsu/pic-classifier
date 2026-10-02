@@ -12,8 +12,7 @@ python photo_dedup_apply.py pic-classifier --yes
 python photo_dedup_apply.py pic-classifier --restore --review-dir ./review_YYYY-MM-DD --yes
 
 ---
-# NSFW判定（nsfwpy）
-# 1. スキャン
+# 1. NSFW検出
 python photo_nsfw_scan.py pic-classifier
 # 2. NSFWを nsfw_review_YYMMDD へ、UNCERTAINを uncertain_review_YYMMDD へ移動）
 python photo_nsfw_apply.py pic-classifier --yes
