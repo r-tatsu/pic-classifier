@@ -52,7 +52,7 @@ python photo_dedup.py ./pic-classifier
 
 `pic-classifier_report.md` と `pic-classifier_dedup.db` が生成されます。DBは差分更新されます。
 
-#### 3. 本番実行（ハッシュが完全一致した画像を削除 + 類似度の高い画像を review へ移動）
+#### 3. ハッシュが完全一致した画像を削除 + 類似度の高い画像をまとめて移動
 
 ```sh
 python photo_dedup_apply.py pic-classifier --yes
@@ -60,7 +60,7 @@ python photo_dedup_apply.py pic-classifier --yes
 
 重複候補は `review_YYYY-MM-DD/` に `group_xxx_` プレフィックス付きで移動されます。
 
-#### 6. review 内で目視確認後、source へリストア
+#### 6. 目視確認した画像をsourceへ戻す
 
 ```sh
 # dry-run で確認
