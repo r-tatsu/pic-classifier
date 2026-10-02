@@ -3,15 +3,15 @@
 photo_dedup.py - 画像重複検出スクリプト（AVIF/HEIC対応・差分更新版）
 MacBook Air M3 16GB向けに最適化
 
-レポート構成:
-  - 確定重複（ORB 100%）: 無条件で削除して問題なし
-  - 要確認（ORB <100%）: 目視確認推奨
-  - 参考（pHashのみ）: ORBでは一致しなかった候補
+設計方針:
+  - 確定重複: ファイルハッシュ(SHA256)完全一致のみ。これだけが自動削除OK。
+  - 重複候補: pHash近傍をORBで検証。スコアは参考。すべて目視確認。
+  - 参考:    pHash近傍だがORBで一致しなかったもの。
 
 使い方:
-    python photo_dedup.py ./source --workers 4
-    → source_dedup.db, source_report.md が自動生成される
-    → DBが既に存在すれば差分更新（新規ファイルのみスキャン）
+    python photo_dedup.py ./pic-classifier
+    → {dir}_dedup.db, {dir}_report.md が自動生成される
+    → 実際の削除・移動は photo_dedup_apply.py で行う
 """
 
 import os
@@ -19,6 +19,7 @@ import sys
 import hashlib
 import sqlite3
 import json
+import difflib
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -50,6 +51,14 @@ IMAGE_EXTENSIONS = {
     ".avif", ".heic", ".heif", ".raw", ".cr2", ".dng", ".nef",
 }
 
+# ORB判定閾値（参考値）
+ORB_MATCH_RATIO_THRESHOLD = 0.30
+ORB_GOOD_MATCHES_THRESHOLD = 30
+ORB_MIN_KP_COUNT = 15
+
+# 画像サイズ差の許容閾値（参表示用）
+SIZE_RATIO_THRESHOLD = 3.0
+
 
 def is_image_file(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTENSIONS
@@ -80,22 +89,51 @@ def hamming_distance(hash1: str, hash2: str) -> int:
     return bin(x).count("1")
 
 
-def compute_orb_similarity(path1: Path, path2: Path) -> tuple[bool, float]:
+def filename_similarity(name1: str, name2: str) -> float:
+    base1 = os.path.splitext(name1)[0].lower()
+    base2 = os.path.splitext(name2)[0].lower()
+    base1 = base1.replace(" ", "").replace("（", "(").replace("）", ")")
+    base2 = base2.replace(" ", "").replace("（", "(").replace("）", ")")
+    return difflib.SequenceMatcher(None, base1, base2).ratio()
+
+
+def get_image_info(filepath: Path) -> tuple[int, int, int]:
+    try:
+        with Image.open(filepath) as img:
+            w, h = img.size
+        sz = filepath.stat().st_size
+        return w, h, sz
+    except Exception:
+        return 0, 0, 0
+
+
+def compute_orb_similarity(path1: Path, path2: Path) -> tuple[bool, float, str]:
     try:
         img1 = _load_image_cv2(path1)
         img2 = _load_image_cv2(path2)
 
         if img1 is None or img2 is None:
-            return False, 0.0
+            return False, 0.0, "画像読み込み失敗"
         if img1.size < 10000 or img2.size < 10000:
-            return False, 0.0
+            return False, 0.0, "画像サイズ小さすぎ"
+
+        info1 = get_image_info(path1)
+        info2 = get_image_info(path2)
+        if info1[0] > 0 and info2[0] > 0:
+            px1 = info1[0] * info1[1]
+            px2 = info2[0] * info2[1]
+            ratio = max(px1, px2) / max(1, min(px1, px2))
+            if ratio > SIZE_RATIO_THRESHOLD:
+                return False, 0.0, f"解像度差大(ratio={ratio:.1f})"
 
         orb = cv2.ORB_create(nfeatures=500)
         kp1, des1 = orb.detectAndCompute(img1, None)
         kp2, des2 = orb.detectAndCompute(img2, None)
 
-        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
-            return False, 0.0
+        if des1 is None or des2 is None:
+            return False, 0.0, "特徴量抽出失敗"
+        if len(kp1) < ORB_MIN_KP_COUNT or len(kp2) < ORB_MIN_KP_COUNT:
+            return False, 0.0, f"特徴点不足({len(kp1)}/{len(kp2)})"
 
         bf = cv2.BFMatcher(cv2.NORM_HAMMING)
         matches = bf.knnMatch(des1, des2, k=2)
@@ -108,11 +146,17 @@ def compute_orb_similarity(path1: Path, path2: Path) -> tuple[bool, float]:
                     good_matches += 1
 
         match_ratio = good_matches / len(kp1)
-        is_match = match_ratio >= 0.15 and good_matches >= 20
-        return is_match, match_ratio
+        is_match = (match_ratio >= ORB_MATCH_RATIO_THRESHOLD and
+                    good_matches >= ORB_GOOD_MATCHES_THRESHOLD)
+
+        if not is_match:
+            reason = f"ratio={match_ratio:.3f}, good={good_matches}"
+            return False, match_ratio, reason
+
+        return True, match_ratio, "ok"
 
     except Exception as e:
-        return False, 0.0
+        return False, 0.0, f"例外: {e}"
 
 
 def _load_image_cv2(filepath: Path):
@@ -331,15 +375,11 @@ def find_phash_duplicates(db: DedupDatabase, threshold: int = 10) -> list:
     return duplicates
 
 
-def find_orb_duplicates(candidate_groups: list) -> tuple[list, list]:
-    """
-    ORBで検証し、結果を確定重複（100%）と要確認（<100%）に分離して返す。
-    戻り値: (confirmed_high, confirmed_low)
-    """
-    confirmed_high = []
-    confirmed_low = []
+def find_orb_candidates(candidate_groups: list) -> tuple[list, list]:
+    orb_matched = []
+    phash_only = []
 
-    print(f"\n🔬 ORB特徴量マッチング: {len(candidate_groups)} グループを検証中...")
+    print(f"\n🔬 ORB特徴量マッチング（参考）: {len(candidate_groups)} グループを検証中...")
 
     for group in candidate_groups:
         paths = group["paths"]
@@ -349,25 +389,40 @@ def find_orb_duplicates(candidate_groups: list) -> tuple[list, list]:
         keep = paths[0]
         matched = [keep]
         max_ratio = 0.0
+        reasons = []
+        sim_details = []
+
+        keep_name = Path(keep).name
+        min_sim = 1.0
+
         for other in paths[1:]:
-            is_match, ratio = compute_orb_similarity(Path(keep), Path(other))
+            is_match, ratio, reason = compute_orb_similarity(Path(keep), Path(other))
+            sim = filename_similarity(keep_name, Path(other).name)
+            min_sim = min(min_sim, sim)
+            sim_details.append(f"{Path(other).name}(sim={sim:.2f}, orb={ratio:.2f})")
+
             if is_match:
                 matched.append(other)
                 max_ratio = max(max_ratio, ratio)
+            else:
+                reasons.append(f"{Path(other).name}: {reason}")
 
         if len(matched) > 1:
             item = {
-                "type": "orb",
+                "type": "candidate",
                 "confidence": min(100, max_ratio * 200),
                 "paths": matched,
                 "keep": select_best_quality(matched),
+                "filename_sim": min_sim,
+                "sim_details": sim_details,
+                "orb_ratio": max_ratio,
+                "orb_reasons": reasons,
             }
-            if item["confidence"] >= 99.9:
-                confirmed_high.append(item)
-            else:
-                confirmed_low.append(item)
+            orb_matched.append(item)
+        else:
+            phash_only.append(group)
 
-    return confirmed_high, confirmed_low
+    return orb_matched, phash_only
 
 
 def select_best_quality(paths: list) -> str:
@@ -384,48 +439,50 @@ def select_best_quality(paths: list) -> str:
     return best
 
 
-def generate_report(db: DedupDatabase, exact, orb_high, orb_low, phash_only, output_path: Path):
+def generate_report(db: DedupDatabase, exact, candidates, phash_only, output_path: Path):
     lines = []
     lines.append("# 画像重複検出レポート")
     lines.append(f"生成日時: {datetime.now().isoformat()}\n")
 
-    total_auto = len(exact) + len(orb_high)
-    total_manual = len(orb_low) + len(phash_only)
-
     lines.append(f"## サマリー")
-    lines.append(f"- 確定重複（自動削除OK）: {total_auto} グループ")
-    lines.append(f"- 要確認（目視確認推奨）: {total_manual} グループ")
-    lines.append(f"- 削除候補ファイル数（確定）: {sum(len(g['paths'])-1 for g in exact + orb_high)}\n")
+    lines.append(f"- 確定重複（ファイルハッシュ完全一致）: {len(exact)} グループ")
+    lines.append(f"- 重複候補（ORB参考スコア付き）: {len(candidates)} グループ")
+    lines.append(f"- 参考（pHashのみ）: {len(phash_only)} グループ")
+    lines.append(f"- 確定削除候補ファイ数: {sum(len(g['paths'])-1 for g in exact)}\n")
 
-    if exact or orb_high:
+    if exact:
         lines.append("## 確定重複（自動削除OK）")
-        lines.append("ORB特徴量マッチングで信頼度100%のもの。無条件で削除して問題ありません。\n")
-        for i, g in enumerate(exact + orb_high, 1):
-            lines.append(f"### グループ {i}（信頼度: {g['confidence']:.1f}%）")
-            lines.append(f"- 保持: `{g['keep']}`")
+        lines.append("ファイルハッシュ(SHA256)が完全一致。ビット単位で同じファイルです。1つを残して他を削除して問題ありません。\n")
+        for i, g in enumerate(exact, 1):
+            lines.append(f"### グループ {i}（信頼度: 100%）")
+            lines.append(f"- 保持推奨: `{g['keep']}`")
             for p in g["paths"]:
                 if p != g["keep"]:
-                    lines.append(f"- 削除候補: `{p}`")
+                    lines.append(f"- 削除対象: `{p}`")
             lines.append("")
 
-    if orb_low:
-        lines.append("## 要確認（ORB中低信頼度）")
-        lines.append("特徴量マッチングで一致したが信頼度が100%未満です。目視で確認してください。\n")
-        for i, g in enumerate(orb_low, 1):
-            lines.append(f"### グループ {i}（信頼度: {g['confidence']:.1f}%）")
-            lines.append(f"- 保持: `{g['keep']}`")
+    if candidates:
+        lines.append("## 重複候補（目視確認必須）")
+        lines.append("pHashで近似的に一致し、ORBでも特徴量がマッチしました。ただしORBスコアは参考値です。")
+        lines.append("ファイル名類似度が低い場合や解像度差が大きい場合は、全く別の画像である可能性があります。\n")
+        for i, g in enumerate(candidates, 1):
+            lines.append(f"### グループ {i}（ORB参考スコア: {g['confidence']:.1f}%）")
+            lines.append(f"- ファイル名類似度: {g['filename_sim']:.2f} ({', '.join(g['sim_details'])})")
+            lines.append(f"- 保持候補: `{g['keep']}`")
             for p in g["paths"]:
                 if p != g["keep"]:
                     lines.append(f"- 削除候補: `{p}`")
+            if g.get("orb_reasons"):
+                lines.append(f"- 非マッチ細: {', '.join(g['orb_reasons'])}")
             lines.append("")
 
     if phash_only:
         lines.append("## 参考（pHashのみ）")
         lines.append("pHashで近似的に一致しましたが、ORB特徴量マッチングでは一致しませんでした。")
-        lines.append("同じキャラクターの別イラストなどの可能性があります。\n")
+        lines.append("同じキャラクターの別イラストや、色調が似ている別画像の可能性があります。\n")
         for i, g in enumerate(phash_only, 1):
-            lines.append(f"### グープ {i}（pHash信頼度: {g['confidence']:.1f}%）")
-            lines.append(f"- 保持: `{g['keep']}`")
+            lines.append(f"### グープ {i}（pHash距離閾値内）")
+            lines.append(f"- 保持候補: `{g['keep']}`")
             for p in g["paths"]:
                 if p != g["keep"]:
                     lines.append(f"- 削除候補: `{p}`")
@@ -456,9 +513,10 @@ def main():
     db_exists = Path(db_path).exists()
     mode_str = "差分更新" if db_exists else "新規作成"
 
-    print(f"📂 対象ディレクトリ: {target_dir}")
+    print(f"📂 対象ディレクト: {target_dir}")
     print(f"🗄️  DBファイル: {db_path}（{mode_str}）")
     print(f"📝 レポートファイル: {report_path}")
+    print(f"💡 実際の削除・移動は photo_dedup_apply.py で行ってください\n")
 
     db = DedupDatabase(db_path)
     scan_directory(target_dir, db, max_workers=args.workers)
@@ -475,25 +533,19 @@ def main():
     print(f"   pHash重複グループ: {len(phash)}")
 
     print("\n" + "=" * 50)
-    print("Step 4: ORB特徴量で精密検証")
-    orb_high, orb_low = find_orb_duplicates(phash)
-    print(f"   ORB確定重複（100%）: {len(orb_high)} グループ")
-    print(f"   ORB要確認（<100%）: {len(orb_low)} グループ")
-
-    orb_paths = set()
-    for g in orb_high + orb_low:
-        orb_paths.update(g["paths"])
-    phash_only = [g for g in phash if not any(p in orb_paths for p in g["paths"])]
+    print("Step 4: ORB特徴量で参考検証")
+    candidates, phash_only = find_orb_candidates(phash)
+    print(f"   ORBマッチ（重複候補）: {len(candidates)} グループ")
     print(f"   pHashのみ（参考）: {len(phash_only)} グループ")
 
     for g in exact:
         db.save_duplicate_group(g["type"], g["confidence"], g["paths"], g["keep"])
-    for g in orb_high:
+    for g in candidates:
         db.save_duplicate_group(g["type"], g["confidence"], g["paths"], g["keep"])
 
     print("\n" + "=" * 50)
     print("Step 5: レポート生成")
-    generate_report(db, exact, orb_high, orb_low, phash_only, report_path)
+    generate_report(db, exact, candidates, phash_only, report_path)
 
     db.close()
     print("\n✅ 全処理完了")

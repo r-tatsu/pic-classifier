@@ -1,6 +1,16 @@
 cd ~/pic-classifier
 conda activate photodedup
 ./classify_images.pl source
-python photo_dedup.py ./source --workers 4
-python photo_dedup_apply.py source --auto --dry-run
-python photo_dedup_apply.py source --auto --yes
+
+# 1. 重複検出（pic-classifier 全体を対象、レポートのみ生成）
+python photo_dedup_v3.py ./pic-classifier
+
+# 2. レポト確認後、削除・移動を dry-run で確認
+python photo_dedup_apply.py pic-classifier --dry-run
+
+# 3. 本番実行（確定重複を削除、候補を review へ移動）
+python photo_dedup_apply.py pic-classifier --yes
+
+# 4. review 内で目視確認後、source へリストア
+python photo_dedup_apply.py pic-classifier --restore --review-dir ./review_YYYY-MM-DD --dry-run
+python photo_dedup_apply.py pic-classifier --restore --review-dir ./review_YYYY-MM-DD --yes
